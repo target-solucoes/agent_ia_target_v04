@@ -19,7 +19,7 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # Page configuration
-st.set_page_config(page_title="Agente IA Target v0.4 (Otimizado)", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Agente IA Target v0.4", page_icon="🤖", layout="wide")
 
 
 def filter_user_friendly_context(context_dict):
@@ -640,7 +640,7 @@ def main():
     st.markdown(
         f"""
         <div class="header-container">
-            <h1 class="app-title">🤖 AGENTE IA TARGET v0.4 (Otimizado)</h1>
+            <h1 class="app-title">🤖 AGENTE IA TARGET v0.4</h1>
             <p class="app-subtitle">INTELIGÊNCIA ARTIFICIAL PARA ANÁLISE DE DADOS</p>
             <p class="app-description">
                 Converse naturalmente com seus dados comerciais. Faça perguntas em linguagem natural 
