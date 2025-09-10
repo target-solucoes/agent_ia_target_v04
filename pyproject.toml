@@ -5,10 +5,10 @@ description = "An AI agent project that uses Agno framework with data analysis t
 packages = [{ include = "src" }]
 
 [tool.poetry.dependencies]
-python = ">=3.9,<3.9.7 || >3.9.7"
+python = ">=3.9,<3.9.7 || >3.9.7,<4"
 pandas = "^2.0.0"
 streamlit = "^1.22.0"
-agno = "*"
+agno = "1.8.1"
 duckdb = "*"
 pyyaml = "^6.0.0"
 openai = "^1.0.0"
