@@ -19,7 +19,38 @@ warnings.filterwarnings("ignore")
 load_dotenv()
 
 # Page configuration
-st.set_page_config(page_title="Agente IA Target v0.4", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="Agente IA Target v0.41 (Otimizado)", page_icon="🤖", layout="wide")
+
+
+def apply_disabled_filters_to_context(context_dict, disabled_filters=None):
+    """
+    Remove filtros desabilitados do contexto antes de enviar para o agente
+    """
+    if not context_dict or not disabled_filters:
+        return context_dict
+    
+    filtered_context = context_dict.copy()
+    
+    # Converter filtros desabilitados para verificação
+    disabled_filter_keys = set()
+    for filter_id in disabled_filters:
+        if ':' in filter_id:
+            key, value = filter_id.split(':', 1)
+            # Tratar casos especiais como range de datas
+            if key == "Data_range":
+                # Para ranges, desabilitar ambos Data_>= e Data_<
+                disabled_filter_keys.add("Data_>=")
+                disabled_filter_keys.add("Data_<")
+            else:
+                # Verificar se o valor corresponde
+                if key in filtered_context and str(filtered_context[key]) == value:
+                    disabled_filter_keys.add(key)
+    
+    # Remover filtros desabilitados
+    for key in disabled_filter_keys:
+        filtered_context.pop(key, None)
+    
+    return filtered_context
 
 
 def filter_user_friendly_context(context_dict):
@@ -44,8 +75,18 @@ def filter_user_friendly_context(context_dict):
     
     # Variáveis que devem sempre ser mostradas (lista de permissão)
     user_relevant_fields = [
-        'Municipio_Cliente', 'UF_Cliente', 'Des_Linha_Produto', 'Data_>=', 'Data_<', 
-        'Data', 'Cliente', 'Produto', 'Regiao', 'Vendedor', 'sem_filtros'
+        # Período
+        'Data', 'Data_>=', 'Data_<', 'periodo', 'mes', 'ano',
+        # Região  
+        'UF_Cliente', 'Municipio_Cliente', 'cidade', 'estado', 'municipio', 'uf',
+        # Cliente
+        'Cod_Cliente', 'Cod_Segmento_Cliente',
+        # Produto
+        'Cod_Familia_Produto', 'Cod_Grupo_Produto', 'Cod_Linha_Produto', 'Des_Linha_Produto',
+        # Representante
+        'Cod_Vendedor', 'Cod_Regiao_Vendedor',
+        # Campos legados/compatibilidade
+        'Cliente', 'Produto', 'Regiao', 'Vendedor', 'sem_filtros'
     ]
     
     filtered_context = {}
@@ -78,43 +119,295 @@ def filter_user_friendly_context(context_dict):
     return filtered_context
 
 
+def create_interactive_filter_manager(context_dict):
+    """
+    Cria interface interativa para gerenciar filtros na sidebar
+    """
+    if not context_dict or context_dict.get('sem_filtros') == 'consulta_geral':
+        st.markdown("🔍 **Consulta Geral**\n\n*Nenhum filtro ativo*")
+        return
+    
+    # Inicializar estado dos filtros desabilitados se não existir
+    if 'disabled_filters' not in st.session_state:
+        st.session_state.disabled_filters = set()
+    
+    # LIMPEZA: Remover filtros desabilitados que não estão mais no contexto atual
+    # Isso garante que filtros antigos não apareçam mais na interface
+    current_filter_ids = set()
+    
+    # Coletar todos os IDs de filtros atualmente presentes no contexto
+    for key, value in context_dict.items():
+        if key in ['Data_>=', 'Data_<'] and 'Data_>=' in context_dict and 'Data_<' in context_dict:
+            # Para ranges de data, usar ID especial
+            start_date = context_dict.get('Data_>=')
+            end_date = context_dict.get('Data_<')
+            if start_date and end_date:
+                current_filter_ids.add(f"Data_range:{start_date}_{end_date}")
+        elif key not in ['Data_>=', 'Data_<']:  # Evitar duplicação para ranges
+            filter_id = f"{key}:{value}"
+            current_filter_ids.add(filter_id)
+    
+    # Remover filtros desabilitados que não estão mais no contexto atual
+    st.session_state.disabled_filters = {
+        f_id for f_id in st.session_state.disabled_filters 
+        if f_id in current_filter_ids
+    }
+    
+    st.markdown("✅ **Filtros Ativos**")
+    st.markdown("*Desmarque para ignorar na próxima consulta*")
+    st.markdown("---")
+    
+    # Categorizar filtros baseado na hierarquia completa
+    temporal_filters = []
+    region_filters = []
+    client_filters = []
+    product_filters = []
+    representative_filters = []
+    
+    for key, value in context_dict.items():
+        # Período
+        if key in ['Data', 'Data_>=', 'Data_<', 'periodo', 'mes', 'ano']:
+            temporal_filters.append((key, value))
+        # Região
+        elif key in ['UF_Cliente', 'Municipio_Cliente', 'cidade', 'estado', 'municipio', 'uf']:
+            region_filters.append((key, value))
+        # Cliente
+        elif key in ['Cod_Cliente', 'Cod_Segmento_Cliente']:
+            client_filters.append((key, value))
+        # Produto
+        elif key in ['Cod_Familia_Produto', 'Cod_Grupo_Produto', 'Cod_Linha_Produto', 'Des_Linha_Produto', 'Produto', 'produto', 'linha']:
+            product_filters.append((key, value))
+        # Representante
+        elif key in ['Cod_Vendedor', 'Cod_Regiao_Vendedor']:
+            representative_filters.append((key, value))
+    
+    # Mostrar controles por categoria
+    if temporal_filters:
+        st.markdown("📅 **Período**")
+        
+        # Detectar se é um range de datas
+        start_date = None
+        end_date = None
+        range_filters = []
+        
+        for key, value in temporal_filters:
+            if 'Data_>=' in key or key == 'inicio':
+                start_date = value
+                range_filters.append((key, value))
+            elif 'Data_<' in key or key == 'fim':
+                end_date = value
+                range_filters.append((key, value))
+        
+        if start_date and end_date:
+            # Tratar range como um filtro único
+            filter_id = f"Data_range:{start_date}_{end_date}"
+            is_enabled = filter_id not in st.session_state.disabled_filters
+            
+            display_text = f"⏰ Período: {start_date} até {end_date}"
+            
+            enabled = st.checkbox(
+                label=display_text,
+                value=is_enabled,
+                key=f"checkbox_{filter_id}"
+            )
+            
+            if enabled and filter_id in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.remove(filter_id)
+            elif not enabled and filter_id not in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.add(filter_id)
+        else:
+            # Filtros temporais individuais
+            for key, value in temporal_filters:
+                filter_id = f"{key}:{value}"
+                is_enabled = filter_id not in st.session_state.disabled_filters
+                
+                if key == 'Data':
+                    display_text = f"📆 Data: {value}"
+                elif 'mes' in key.lower():
+                    display_text = f"📅 Mês: {value}"
+                elif 'ano' in key.lower():
+                    display_text = f"🗓️ Ano: {value}"
+                else:
+                    display_name = key.replace("Data_", "").replace(">=", "A partir de").replace("<", "Antes de")
+                    display_text = f"📅 {display_name}: {value}"
+                
+                enabled = st.checkbox(
+                    label=display_text,
+                    value=is_enabled,
+                    key=f"checkbox_{filter_id}"
+                )
+                
+                if enabled and filter_id in st.session_state.disabled_filters:
+                    st.session_state.disabled_filters.remove(filter_id)
+                elif not enabled and filter_id not in st.session_state.disabled_filters:
+                    st.session_state.disabled_filters.add(filter_id)
+        
+        st.markdown("")
+    
+    if region_filters:
+        st.markdown("📍 **Região**")
+        for key, value in region_filters:
+            filter_id = f"{key}:{value}"
+            is_enabled = filter_id not in st.session_state.disabled_filters
+            
+            # Exibir com estilo apropriado
+            if key in ['Municipio_Cliente', 'cidade', 'municipio']:
+                display_text = f"🏙️ Cidade: {value}"
+            elif key in ['UF_Cliente', 'estado', 'uf']:
+                display_text = f"🗺️ Estado: {value}"
+            else:
+                display_text = f"📍 {key}: {value}"
+            
+            # Criar checkbox com label personalizado
+            enabled = st.checkbox(
+                label=display_text,
+                value=is_enabled,
+                key=f"checkbox_{filter_id}"
+            )
+            
+            # Atualizar estado dos filtros desabilitados
+            if enabled and filter_id in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.remove(filter_id)
+            elif not enabled and filter_id not in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.add(filter_id)
+        
+        st.markdown("")
+    
+    if client_filters:
+        st.markdown("👥 **Cliente**")
+        for key, value in client_filters:
+            filter_id = f"{key}:{value}"
+            is_enabled = filter_id not in st.session_state.disabled_filters
+            
+            if key == 'Cod_Cliente':
+                display_text = f"🏢 Cliente: {value}"
+            elif key == 'Cod_Segmento_Cliente':
+                display_text = f"📊 Segmento: {value}"
+            else:
+                display_text = f"👥 {key}: {value}"
+            
+            enabled = st.checkbox(
+                label=display_text,
+                value=is_enabled,
+                key=f"checkbox_{filter_id}"
+            )
+            
+            if enabled and filter_id in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.remove(filter_id)
+            elif not enabled and filter_id not in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.add(filter_id)
+        
+        st.markdown("")
+    
+    if product_filters:
+        st.markdown("🛍️ **Produto**")
+        for key, value in product_filters:
+            filter_id = f"{key}:{value}"
+            is_enabled = filter_id not in st.session_state.disabled_filters
+            
+            if key == 'Cod_Familia_Produto':
+                display_text = f"🏭 Família: {value}"
+            elif key == 'Cod_Grupo_Produto':
+                display_text = f"📋 Grupo: {value}"
+            elif key == 'Cod_Linha_Produto':
+                display_text = f"📦 Cód. Linha: {value}"
+            elif key in ['Des_Linha_Produto', 'linha']:
+                display_text = f"📦 Linha: {value}"
+            elif key in ['Produto', 'produto']:
+                display_text = f"🏷️ Produto: {value}"
+            else:
+                display_text = f"🛍️ {key}: {value}"
+            
+            enabled = st.checkbox(
+                label=display_text,
+                value=is_enabled,
+                key=f"checkbox_{filter_id}"
+            )
+            
+            if enabled and filter_id in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.remove(filter_id)
+            elif not enabled and filter_id not in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.add(filter_id)
+        
+        st.markdown("")
+    
+    if representative_filters:
+        st.markdown("👨‍💼 **Representante**")
+        for key, value in representative_filters:
+            filter_id = f"{key}:{value}"
+            is_enabled = filter_id not in st.session_state.disabled_filters
+            
+            if key == 'Cod_Vendedor':
+                display_text = f"🤝 Vendedor: {value}"
+            elif key == 'Cod_Regiao_Vendedor':
+                display_text = f"🗺️ Região Vendedor: {value}"
+            else:
+                display_text = f"👨‍💼 {key}: {value}"
+            
+            enabled = st.checkbox(
+                label=display_text,
+                value=is_enabled,
+                key=f"checkbox_{filter_id}"
+            )
+            
+            if enabled and filter_id in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.remove(filter_id)
+            elif not enabled and filter_id not in st.session_state.disabled_filters:
+                st.session_state.disabled_filters.add(filter_id)
+        
+        st.markdown("")
+    
+    # Botão para reativar todos os filtros
+    if st.session_state.disabled_filters:
+        st.markdown("---")
+        if st.button("🔄 Reativar Todos os Filtros", type="secondary"):
+            st.session_state.disabled_filters.clear()
+            st.rerun()
+    
+    # Informação sobre filtros
+    disabled_count = len(st.session_state.disabled_filters)
+    if disabled_count > 0:
+        st.markdown("---")
+        st.markdown(f"⚠️ *{disabled_count} filtro(s) desabilitado(s)*")
+    else:
+        st.markdown("---")
+        st.markdown("💡 *Todos os filtros ativos*")
+
+
 def format_context_for_display(context_dict):
     """
-    Formata contexto de forma amigável para exibição no sidebar
+    Formata contexto de forma amigável para exibição no sidebar (versão legada para compatibilidade)
     """
     if not context_dict or context_dict.get('sem_filtros') == 'consulta_geral':
         return "🔍 **Consulta Geral**\n\n*Nenhum filtro ativo*"
     
     display_parts = ["✅ **Filtros Ativos**", ""]
     
-    # Categorizar filtros
-    location_filters = []
+    # Categorizar filtros baseado na hierarquia completa
     temporal_filters = []
+    region_filters = []
+    client_filters = []
     product_filters = []
-    other_filters = []
+    representative_filters = []
     
     for key, value in context_dict.items():
-        if key in ['Municipio_Cliente', 'UF_Cliente', 'cidade', 'estado', 'municipio', 'uf']:
-            location_filters.append((key, value))
-        elif key in ['Data_>=', 'Data_<', 'Data', 'periodo', 'mes', 'ano']:
+        # Período
+        if key in ['Data', 'Data_>=', 'Data_<', 'periodo', 'mes', 'ano']:
             temporal_filters.append((key, value))
-        elif key in ['Des_Linha_Produto', 'Produto', 'produto', 'linha']:
+        # Região
+        elif key in ['UF_Cliente', 'Municipio_Cliente', 'cidade', 'estado', 'municipio', 'uf']:
+            region_filters.append((key, value))
+        # Cliente
+        elif key in ['Cod_Cliente', 'Cod_Segmento_Cliente']:
+            client_filters.append((key, value))
+        # Produto
+        elif key in ['Cod_Familia_Produto', 'Cod_Grupo_Produto', 'Cod_Linha_Produto', 'Des_Linha_Produto', 'Produto', 'produto', 'linha']:
             product_filters.append((key, value))
-        else:
-            other_filters.append((key, value))
+        # Representante
+        elif key in ['Cod_Vendedor', 'Cod_Regiao_Vendedor']:
+            representative_filters.append((key, value))
     
     # Formatação por categoria com melhor visual
-    if location_filters:
-        display_parts.append("📍 **Localização**")
-        for key, value in location_filters:
-            if key in ['Municipio_Cliente', 'cidade', 'municipio']:
-                display_parts.append(f"🏙️ Cidade: **{value}**")
-            elif key in ['UF_Cliente', 'estado', 'uf']:
-                display_parts.append(f"🗺️ Estado: **{value}**")
-            else:
-                display_parts.append(f"📍 {key}: **{value}**")
-        display_parts.append("")
-    
     if temporal_filters:
         display_parts.append("📅 **Período**")
         
@@ -131,23 +424,50 @@ def format_context_for_display(context_dict):
         if start_date and end_date:
             display_parts.append(f"⏰ **Período**: {start_date} até {end_date}")
         else:
-            # Exibir filtros temporais individuais
             for key, value in temporal_filters:
                 if key == 'Data':
-                    display_parts.append(f"📆 Data: **{value}**")
+                    display_parts.append(f"📆 **Data**: {value}")
                 elif 'mes' in key.lower():
-                    display_parts.append(f"📅 Mês: **{value}**")
+                    display_parts.append(f"📅 **Mês**: {value}")
                 elif 'ano' in key.lower():
-                    display_parts.append(f"🗓️ Ano: **{value}**")
+                    display_parts.append(f"🗓️ **Ano**: {value}")
                 else:
                     display_name = key.replace("Data_", "").replace(">=", "A partir de").replace("<", "Antes de")
-                    display_parts.append(f"📅 {display_name}: **{value}**")
+                    display_parts.append(f"📅 **{display_name}**: {value}")
+        display_parts.append("")
+    
+    if region_filters:
+        display_parts.append("📍 **Região**")
+        for key, value in region_filters:
+            if key in ['Municipio_Cliente', 'cidade', 'municipio']:
+                display_parts.append(f"🏙️ Cidade: **{value}**")
+            elif key in ['UF_Cliente', 'estado', 'uf']:
+                display_parts.append(f"🗺️ Estado: **{value}**")
+            else:
+                display_parts.append(f"📍 {key}: **{value}**")
+        display_parts.append("")
+    
+    if client_filters:
+        display_parts.append("👥 **Cliente**")
+        for key, value in client_filters:
+            if key == 'Cod_Cliente':
+                display_parts.append(f"🏢 Cliente: **{value}**")
+            elif key == 'Cod_Segmento_Cliente':
+                display_parts.append(f"📊 Segmento: **{value}**")
+            else:
+                display_parts.append(f"👥 {key}: **{value}**")
         display_parts.append("")
     
     if product_filters:
         display_parts.append("🛍️ **Produto**")
         for key, value in product_filters:
-            if key in ['Des_Linha_Produto', 'linha']:
+            if key == 'Cod_Familia_Produto':
+                display_parts.append(f"🏭 Família: **{value}**")
+            elif key == 'Cod_Grupo_Produto':
+                display_parts.append(f"📋 Grupo: **{value}**")
+            elif key == 'Cod_Linha_Produto':
+                display_parts.append(f"📦 Cód. Linha: **{value}**")
+            elif key in ['Des_Linha_Produto', 'linha']:
                 display_parts.append(f"📦 Linha: **{value}**")
             elif key in ['Produto', 'produto']:
                 display_parts.append(f"🏷️ Produto: **{value}**")
@@ -155,16 +475,19 @@ def format_context_for_display(context_dict):
                 display_parts.append(f"🛍️ {key}: **{value}**")
         display_parts.append("")
     
-    if other_filters:
-        display_parts.append("📊 **Outros Filtros**")
-        for key, value in other_filters:
-            # Nomes mais amigáveis para filtros
-            display_name = key.replace("_", " ").replace("-", " ").title()
-            display_parts.append(f"⚙️ {display_name}: **{value}**")
+    if representative_filters:
+        display_parts.append("👨‍💼 **Representante**")
+        for key, value in representative_filters:
+            if key == 'Cod_Vendedor':
+                display_parts.append(f"🤝 Vendedor: **{value}**")
+            elif key == 'Cod_Regiao_Vendedor':
+                display_parts.append(f"🗺️ Região Vendedor: **{value}**")
+            else:
+                display_parts.append(f"👨‍💼 {key}: **{value}**")
         display_parts.append("")
     
     # Adicionar rodapé informativo se houver filtros
-    if any([location_filters, temporal_filters, product_filters, other_filters]):
+    if any([temporal_filters, region_filters, client_filters, product_filters, representative_filters]):
         display_parts.extend(["---", "💡 *Filtros aplicados à consulta atual*"])
     
     return "\n".join(display_parts).strip()
@@ -275,6 +598,25 @@ def render_plotly_visualization(visualization_data):
         df_with_labels = df.copy()
         df_with_labels['value_label'] = df_with_labels['value'].apply(format_compact_number)
         
+        # Verificar se foi detectado como ID categórico pelo backend e ajustar labels
+        is_categorical_id = config.get('is_categorical_id', False)
+        
+        # Detecção adicional no frontend como fallback
+        if not is_categorical_id and not df_with_labels.empty:
+            sample_labels = df_with_labels['label'].head().astype(str)
+            # Padrões que indicam IDs categóricos: números de 3-8 dígitos
+            for label in sample_labels:
+                if label.isdigit() and 3 <= len(label) <= 8:
+                    is_categorical_id = True
+                    break
+        
+        # Formatar labels para IDs categóricos
+        if is_categorical_id:
+            original_col = config.get('original_label_column', '')
+            if 'cliente' in original_col.lower():
+                # Para códigos de cliente, adicionar prefixo
+                df_with_labels['label'] = 'Cliente ' + df_with_labels['label'].astype(str)
+        
         # Criar gráfico de barras horizontais
         fig = px.bar(
             df_with_labels,
@@ -311,10 +653,19 @@ def render_plotly_visualization(visualization_data):
         )
         
         # Configurações do eixo Y para melhor legibilidade
-        fig.update_yaxes(
-            categoryorder='total ascending',  # Ordenar por valor
-            tickfont=dict(size=12, family='Arial')
-        )
+        if is_categorical_id:
+            # Forçar tratamento como categoria para códigos de cliente/produto
+            fig.update_yaxes(
+                type='category',  # Forçar tipo categoria
+                categoryorder='total ascending',  # Ordenar por valor
+                tickfont=dict(size=12, family='Arial')
+            )
+        else:
+            # Comportamento padrão para outras categorias
+            fig.update_yaxes(
+                categoryorder='total ascending',  # Ordenar por valor
+                tickfont=dict(size=12, family='Arial')
+            )
         
         # Configurações do eixo X com formatação inteligente e estilo aprimorado
         value_format = config.get('value_format', 'number')
@@ -616,6 +967,66 @@ def main():
         margin-bottom: 0.5rem;
     }
 
+    /* Filter Management Styling */
+    .filter-checkbox {
+        margin-right: 0.5rem !important;
+        margin-bottom: 0.5rem !important;
+    }
+    
+    .filter-item {
+        display: flex;
+        align-items: center;
+        margin-bottom: 0.5rem;
+        padding: 0.25rem 0;
+    }
+    
+    .filter-text {
+        flex: 1;
+        margin-left: 0.5rem;
+    }
+    
+    .disabled-filter {
+        opacity: 0.6;
+        text-decoration: line-through;
+        color: var(--text-color-light, #666);
+    }
+    
+    .enabled-filter {
+        opacity: 1;
+        text-decoration: none;
+    }
+    
+    /* Sidebar filter management styling */
+    .stSidebar .stCheckbox {
+        margin-bottom: 0.25rem !important;
+    }
+    
+    .stSidebar .stCheckbox > div {
+        margin-bottom: 0 !important;
+    }
+    
+    .filter-category-header {
+        font-weight: bold;
+        margin-top: 1rem;
+        margin-bottom: 0.5rem;
+        border-bottom: 1px solid var(--secondary-background-color);
+        padding-bottom: 0.25rem;
+    }
+    
+    .filter-status-info {
+        font-size: 0.85rem;
+        font-style: italic;
+        padding: 0.5rem;
+        margin-top: 0.5rem;
+        border-radius: 5px;
+        background: var(--secondary-background-color);
+    }
+    
+    .reactivate-button {
+        width: 100% !important;
+        margin-top: 0.5rem !important;
+    }
+
     /* Responsive adjustments */
     @media (max-width: 768px) {
         .app-title {
@@ -640,7 +1051,7 @@ def main():
     st.markdown(
         f"""
         <div class="header-container">
-            <h1 class="app-title">🤖 AGENTE IA TARGET v0.4</h1>
+            <h1 class="app-title">🤖 AGENTE IA TARGET v0.41 (Otimizado)</h1>
             <p class="app-subtitle">INTELIGÊNCIA ARTIFICIAL PARA ANÁLISE DE DADOS</p>
             <p class="app-description">
                 Converse naturalmente com seus dados comerciais. Faça perguntas em linguagem natural 
@@ -681,9 +1092,9 @@ def main():
             st.markdown("## 📊 Contexto da Consulta")
             st.markdown("---")
             
-            # Exibir contexto atual ou estado inicial
-            if hasattr(st.session_state, 'current_context') and st.session_state.current_context:
-                st.markdown(st.session_state.current_context)
+            # Exibir interface interativa ou estado inicial
+            if hasattr(st.session_state, 'current_context_dict') and st.session_state.current_context_dict:
+                create_interactive_filter_manager(st.session_state.current_context_dict)
             else:
                 st.markdown("🔍 **Aguardando consulta...**\n\n*O contexto dos filtros aparecerá aqui*")
         
@@ -733,6 +1144,11 @@ Como posso ajudá-lo hoje?"""
                     # NOVA FUNCIONALIDADE: Limpar contexto persistente do agente
                     if agent is not None and hasattr(agent, 'persistent_context'):
                         agent.persistent_context = {}
+                    # Limpar estado dos filtros desabilitados
+                    if 'disabled_filters' in st.session_state:
+                        st.session_state.disabled_filters.clear()
+                    if 'current_context_dict' in st.session_state:
+                        del st.session_state.current_context_dict
                     # Force app rerun to refresh everything
                     st.rerun()
 
@@ -813,8 +1229,11 @@ Como posso ajudá-lo hoje?"""
                         # Get debug mode from session state
                         debug_mode = st.session_state.get("debug_mode", False)
 
-                        # Run agent with debug mode
-                        response = agent.run(prompt, debug_mode=debug_mode)
+                        # Obter filtros desabilitados do session state
+                        disabled_filters = st.session_state.get('disabled_filters', set())
+                        
+                        # Run agent with debug mode and disabled filters
+                        response = agent.run(prompt, debug_mode=debug_mode, disabled_filters=disabled_filters)
                         
                         # Calculate response time
                         response_time = time.time() - start_time
@@ -838,13 +1257,25 @@ Como posso ajudá-lo hoje?"""
                           
                        
                         # Update sidebar context instead of showing in chat
-                        if final_context:
+                        # CORREÇÃO: Usar apenas o contexto persistente atual do agente,
+                        # que reflete exatamente os filtros aplicados na última consulta
+                        actual_applied_context = {}
+                        if hasattr(agent, "persistent_context") and agent.persistent_context:
+                            actual_applied_context = agent.persistent_context.copy()
+                        
+                        # Aplicar filtros desabilitados para remover da visualização
+                        disabled_filters = st.session_state.get('disabled_filters', set())
+                        visual_context = apply_disabled_filters_to_context(actual_applied_context, disabled_filters)
+                        
+                        if visual_context:
                             # Filter and format context for user-friendly display
-                            filtered_context = filter_user_friendly_context(final_context)
+                            filtered_context = filter_user_friendly_context(visual_context)
                             formatted_context = format_context_for_display(filtered_context)
                             st.session_state.current_context = formatted_context
+                            st.session_state.current_context_dict = filtered_context
                         else:
                             st.session_state.current_context = "Nenhum filtro específico aplicado"
+                            st.session_state.current_context_dict = {}
 
                         # If debug mode is active, add debug information
                         if (
